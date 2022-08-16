@@ -1,12 +1,14 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using Microsoft.Extensions.Configuration;
 using SMBLibrary;
 using SMBLibrary.Client;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Net;
-using System.Text;
-using System.Text.Unicode;
 using FileAttributes = SMBLibrary.FileAttributes;
 
 namespace SmbHelper
@@ -25,52 +27,114 @@ namespace SmbHelper
             var client = new SMB2Client(); // SMB2Client can be used as well
 
             var smbSection = configuration.GetSection("SMB");
-            var host = smbSection["host"]; //10.0.10.2
-            var sharedFolderName = smbSection["sharedFolderName"];//Users
-            var path = smbSection["path"];//Path administrator\shared
+            var host = smbSection["host"];
+            var sharedFolderName = smbSection["sharedFolderName"];
+            var path = smbSection["path"];
             var userName = smbSection["userName"];
             var password = smbSection["password"];
 
             if (!IPAddress.TryParse(host, out var address))
             {
                 var iPHostEntry = Dns.GetHostEntry(host);
-                if (iPHostEntry.AddressList.Length == 0)
+                address = iPHostEntry.AddressList.FirstOrDefault(x => x.AddressFamily == AddressFamily.InterNetwork);
+                if (address == null)
                 {
+                    Console.WriteLine("Can not get IPV4 address");
                     return;
                 }
-                address = iPHostEntry.AddressList[0];
             }
 
-            //\\10.0.10.2\Users\Administrator\shared
+            #region Connect
+
+            Console.WriteLine("Connect------------- Enter?");
+            Console.ReadLine();
+
             bool isConnected = client.Connect(address, SMBTransportType.DirectTCPTransport);
             if (!isConnected)
             {
                 Console.WriteLine("SMB connect failed.");
             }
+            Console.WriteLine("SMB connect success.");
 
-            var status1 = client.Login(string.Empty, userName, password);
-            if (status1 == NTStatus.STATUS_SUCCESS)
+            #endregion
+
+            #region Login
+
+            Console.WriteLine("Login------------- Enter?");
+            Console.ReadLine();
+            var status = client.Login(string.Empty, userName, password);
+            if (status != NTStatus.STATUS_SUCCESS)
             {
-                List<string> shares = client.ListShares(out status1);
-
-                Console.WriteLine("SMB connect success.");
-                Console.WriteLine("Shares:");
-                foreach (var item in shares)
-                {
-                    Console.WriteLine(item);
-                }
+                Console.WriteLine($"SMB client Login failed. {status}");
+                return;
             }
-            Console.WriteLine("-------------");
 
-            var fileStore = client.TreeConnect(sharedFolderName, out var status);
+            #endregion
 
-            Console.WriteLine("Create File");
-            var fileName = path + new Guid("9068e397-de24-4ede-a340-7255af5cd53c") + ".txt";
+            #region ListShares
 
-            var fileHandle = CreateFile(fileStore, fileName, Encoding.UTF8.GetBytes(Guid.NewGuid().ToString()));
-            Console.WriteLine("-------------");
+            Console.WriteLine("ListShares------------- Enter?");
+            Console.ReadLine();
+            var shares = client.ListShares(out status);
+            if (status != NTStatus.STATUS_SUCCESS)
+            {
+                Console.WriteLine($"SMB client list shares failed. {status}");
+                return;
+            }
 
-            Console.WriteLine("Create Directory");
+            Console.WriteLine("Shares:");
+            foreach (var item in shares)
+            {
+                Console.WriteLine(item);
+            }
+
+            #endregion
+
+            #region TreeConnect
+
+            Console.WriteLine("TreeConnect------------- Enter?");
+            Console.ReadLine();
+
+            var fileStore = client.TreeConnect(sharedFolderName, out status);
+            if (status != NTStatus.STATUS_SUCCESS)
+            {
+                Console.WriteLine($"SMB client TreeConnect failed. {status}");
+                return;
+            }
+
+            #endregion
+
+            #region CreateFile
+
+            Console.WriteLine("CreateFile------------- Enter?");
+            Console.ReadLine();
+
+            var split = string.IsNullOrWhiteSpace(path) ? string.Empty : "\\";
+            var fileName = $"{path}{split}{Guid.NewGuid()}.txt";
+            var fileContents = Encoding.UTF8.GetBytes(Guid.NewGuid().ToString());
+            Console.WriteLine($"FileContent Length:{fileContents.Length}");
+
+            CreateFile(fileStore, fileName, fileContents);
+
+            #endregion
+
+            #region ReadFile
+
+            Console.WriteLine("ReadFile------------- Enter?");
+            Console.ReadLine();
+
+            var readFileContents = ReadFile(fileStore, fileName, (int)client.MaxReadSize);
+            Debug.Assert(readFileContents != null);
+            Debug.Assert(readFileContents.Length == fileContents.Length);
+            Console.WriteLine($"Read FileContent Length:{readFileContents.Length}");
+
+            #endregion
+
+            #region Create Directory
+
+            Console.WriteLine("Create Directory------------- Enter?");
+            Console.ReadLine();
+
             for (int i = 0; i < 3; i++)
             {
                 var dirPath = Path.Combine(path, Guid.NewGuid().ToString());
@@ -80,57 +144,88 @@ namespace SmbHelper
                     Console.WriteLine(dirPath);
                 }
             }
-            Console.WriteLine("-------------");
 
-            Console.WriteLine("Query Directory");
+            #endregion
+
+            #region Query Directory
+
+            Console.WriteLine("Query Directory------------- Enter?");
+            Console.ReadLine();
+
             var queryDirectoryInfos = QueryDirectory(fileStore, path);
             foreach (var item in queryDirectoryInfos)
             {
-                Console.WriteLine((item as SMBLibrary.FileDirectoryInformation)?.FileName);
+                var fileInfo = (item as FileDirectoryInformation);
+                Console.WriteLine($"FileName:{fileInfo.FileName} Type:{fileInfo.FileAttributes}");
             }
-            Console.WriteLine("-------------");
 
+            #endregion
 
-            Console.WriteLine("Delete Directory");
+            #region Delete Directory
+
+            Console.WriteLine("Delete Directory------------- Enter?");
+            Console.ReadLine();
+
             foreach (var item in queryDirectoryInfos)
             {
-                var fileInfo = (item as SMBLibrary.FileDirectoryInformation);
-                if (fileInfo.FileAttributes == FileAttributes.Directory)
+                var fileInfo = (item as FileDirectoryInformation);
+                if (fileInfo.FileAttributes == FileAttributes.Directory && fileInfo.FileName != "." && fileInfo.FileName != "..")
                 {
+                    Console.WriteLine($"Delete {fileInfo.FileName}");
                     DeleteDirectory(fileStore, Path.Combine(path, fileInfo.FileName));
                 }
             }
-            Console.WriteLine("-------------");
 
+            #endregion
 
-            Console.WriteLine("Delete File");
-            DeleteFile(fileStore, fileHandle);
-            Console.WriteLine("-------------");
+            #region Delete File
+
+            Console.WriteLine("Delete File------------- Enter?");
+            Console.ReadLine();
+
+            DeleteFile(fileStore, fileName);
+
+            #endregion
+
+            #region Disconnect
+
+            Console.WriteLine("Disconnect------------- Enter?");
 
             fileStore.Disconnect();
             client.Logoff();
 
             Console.WriteLine("SMB disconnect.");
+
+            #endregion
+
+            Console.ReadLine();
         }
 
-        public static object CreateFile(INTFileStore fileStore, string fullPathWithFileName, byte[] content)
+        public static void CreateFile(INTFileStore fileStore, string fullPathWithFileName, byte[] content)
         {
             var status = fileStore.CreateFile(
                    out var fileHandle,
                    out _,
                    fullPathWithFileName,
-                   AccessMask.GENERIC_WRITE | AccessMask.DELETE | AccessMask.SYNCHRONIZE,
+                   AccessMask.GENERIC_WRITE | AccessMask.SYNCHRONIZE,
                    FileAttributes.Normal,
                    ShareAccess.None,
                    CreateDisposition.FILE_OVERWRITE_IF,
                    CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_ALERT,
                    null);
-            if (status == NTStatus.STATUS_SUCCESS)
+            if (status != NTStatus.STATUS_SUCCESS)
             {
-                status = fileStore.WriteFile(out _, fileHandle, 0, content);
+                Console.WriteLine("CreateFile failed.");
+                return;
             }
-            return fileHandle;
-
+            status = fileStore.WriteFile(out _, fileHandle, 0, content);
+            if (status != NTStatus.STATUS_SUCCESS)
+            {
+                Console.WriteLine("WriteFile failed.");
+                fileStore.CloseFile(fileHandle);
+                return;
+            }
+            fileStore.CloseFile(fileHandle);
         }
 
         public static NTStatus CreateDirectory(INTFileStore fileStore, string relativePath, SecurityContext securityContext)
@@ -153,7 +248,7 @@ namespace SmbHelper
             return createStatus;
         }
 
-        public static List<QueryDirectoryFileInformation> QueryDirectory(INTFileStore fileStore, string relativePath = "", bool onlyDir = false)
+        public static List<QueryDirectoryFileInformation> QueryDirectory(INTFileStore fileStore, string relativePath)
         {
             var status = fileStore.CreateFile(
                 out var directoryHandle,
@@ -164,20 +259,62 @@ namespace SmbHelper
                 ShareAccess.Read | ShareAccess.Write, CreateDisposition.FILE_OPEN,
                 CreateOptions.FILE_DIRECTORY_FILE,
                 null);
-            if (status == NTStatus.STATUS_SUCCESS)
+            if (status != NTStatus.STATUS_SUCCESS)
             {
-                fileStore.QueryDirectory(
+                throw new Exception("QueryDirectory failed");
+            }
+
+            fileStore.QueryDirectory(
                     out List<QueryDirectoryFileInformation> fileList,
                     directoryHandle,
                     "*",
                     FileInformationClass.FileDirectoryInformation);
 
-                fileStore.CloseFile(directoryHandle);
+            fileStore.CloseFile(directoryHandle);
 
-                return fileList;
+            return fileList;
+        }
+
+        public static byte[] ReadFile(INTFileStore fileStore, string fullPathWithFileName, int maxReadSize)
+        {
+            var status = fileStore.CreateFile(
+                   out var fileHandle,
+                   out var fileStatus,
+                   fullPathWithFileName,
+                   AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE,
+                   FileAttributes.Normal,
+                   ShareAccess.Read,
+                   CreateDisposition.FILE_OPEN,
+                   CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_ALERT,
+                   null);
+
+            if (status != NTStatus.STATUS_SUCCESS)
+            {
+                throw new Exception("Failed to read from file");
             }
 
-            throw new Exception("QueryDirectory failed");
+            using MemoryStream stream = new MemoryStream();
+
+            long bytesRead = 0;
+            while (true)
+            {
+                status = fileStore.ReadFile(out var data, fileHandle, bytesRead, maxReadSize);
+                if (status != NTStatus.STATUS_SUCCESS && status != NTStatus.STATUS_END_OF_FILE)
+                {
+                    throw new Exception("Failed to read from file");
+                }
+
+                if (status == NTStatus.STATUS_END_OF_FILE || data.Length == 0)
+                {
+                    break;
+                }
+                bytesRead += data.Length;
+                stream.Write(data, 0, data.Length);
+            }
+
+            fileStore.CloseFile(fileHandle);
+
+            return stream.ToArray();
         }
 
         public static NTStatus DeleteFile(INTFileStore fileStore, string filePath)
@@ -193,16 +330,23 @@ namespace SmbHelper
                 CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_ALERT,
                 null);
 
-            if (status == NTStatus.STATUS_SUCCESS)
+            if (status != NTStatus.STATUS_SUCCESS)
             {
-                FileDispositionInformation fileDispositionInformation = new FileDispositionInformation
-                {
-                    DeletePending = true
-                };
-                status = fileStore.SetFileInformation(fileHandle, fileDispositionInformation);
-                bool deleteSucceeded = (status == NTStatus.STATUS_SUCCESS);
-                status = fileStore.CloseFile(fileHandle);
+                Console.WriteLine("DeleteFile failed.");
+                return status;
             }
+
+            FileDispositionInformation fileDispositionInformation = new FileDispositionInformation
+            {
+                DeletePending = true
+            };
+            status = fileStore.SetFileInformation(fileHandle, fileDispositionInformation);
+            if (status != NTStatus.STATUS_SUCCESS)
+            {
+                Console.WriteLine("DeleteFile failed.");
+                return status;
+            }
+            status = fileStore.CloseFile(fileHandle);
 
             return status;
         }
@@ -230,16 +374,23 @@ namespace SmbHelper
                 CreateOptions.FILE_DIRECTORY_FILE,
                 null);
 
-            if (status == NTStatus.STATUS_SUCCESS)
+            if (status != NTStatus.STATUS_SUCCESS)
             {
-                FileDispositionInformation fileDispositionInformation = new FileDispositionInformation
-                {
-                    DeletePending = true
-                };
-                status = fileStore.SetFileInformation(fileHandle, fileDispositionInformation);
-                bool deleteSucceeded = (status == NTStatus.STATUS_SUCCESS);
-                status = fileStore.CloseFile(fileHandle);
+                Console.WriteLine("DeleteDirectory failed.");
+                return status;
             }
+
+            FileDispositionInformation fileDispositionInformation = new FileDispositionInformation
+            {
+                DeletePending = true
+            };
+            status = fileStore.SetFileInformation(fileHandle, fileDispositionInformation);
+            if (status != NTStatus.STATUS_SUCCESS)
+            {
+                Console.WriteLine("DeleteDirectory failed.");
+                return status;
+            }
+            status = fileStore.CloseFile(fileHandle);
 
             return status;
         }
